@@ -1,0 +1,18 @@
+{
+  "name": "dymium-auth-plugin",
+  "version": "1.0.0",
+  "description": "OpenCode plugin for Dymium/GhostLLM authentication with HTTP/1.1 port-forward compatibility",
+  "main": "index.ts",
+  "type": "module",
+  "keywords": ["opencode", "plugin", "dymium", "ghostllm", "auth", "keycloak"],
+  "author": "Dymium",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dymium-io/dymium-auth-plugin.git"
+  },
+  "bugs": {
+    "url": "https://github.com/dymium-io/dymium-auth-plugin/issues"
+  },
+  "homepage": "https://github.com/dymium-io/dymium-auth-plugin#readme"
+}
