@@ -8,7 +8,15 @@ import https from "https"
 const AUTH_JSON_PATH = path.join(os.homedir(), ".local/share/opencode/auth.json")
 
 // Log file for debugging (no console.log to avoid polluting OpenCode UI)
-const LOG_FILE = path.join(os.homedir(), ".local/share/dymium-opencode-plugin/debug.log")
+const LOG_DIR = path.join(os.homedir(), ".local/share/dymium-opencode-plugin")
+const LOG_FILE = path.join(LOG_DIR, "debug.log")
+
+// Ensure log directory exists
+try {
+  if (!fs.existsSync(LOG_DIR)) {
+    fs.mkdirSync(LOG_DIR, { recursive: true })
+  }
+} catch {}
 
 function log(message: string) {
   const timestamp = new Date().toISOString()
@@ -17,6 +25,34 @@ function log(message: string) {
   try {
     fs.appendFileSync(LOG_FILE, line)
   } catch {}
+}
+
+// ============================================================================
+// Session State Tracking
+// ============================================================================
+
+interface SessionState {
+  requestStartTime: number | null
+  lastStatus: string | null
+  isProcessing: boolean
+}
+
+const sessionState: SessionState = {
+  requestStartTime: null,
+  lastStatus: null,
+  isProcessing: false,
+}
+
+/**
+ * Format duration in human-readable form
+ */
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`
+  const seconds = Math.floor(ms / 1000)
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  const remainingSeconds = seconds % 60
+  return `${minutes}m ${remainingSeconds}s`
 }
 
 /**
@@ -206,11 +242,17 @@ async function dymiumFetch(
  * 
  * Uses HTTP/1.1 explicitly to work with kubectl port-forward.
  * Sets Host header to hostname only (without port) for Istio compatibility.
+ * 
+ * Also provides event handlers for session status feedback when
+ * GhostLLM reasoning events are implemented server-side.
  */
 export default async function plugin({ client, project, directory }: any) {
   log(`Plugin initialized for project: ${project?.name || directory}`)
   
   return {
+    // ========================================================================
+    // Authentication Configuration
+    // ========================================================================
     auth: {
       // Match the provider name exactly
       provider: "dymium",
@@ -225,6 +267,11 @@ export default async function plugin({ client, project, directory }: any) {
       async loader(getAuth: () => Promise<any>, provider: any) {
         log(`Loader called for provider: ${provider?.id || provider}`)
         
+        // Track that we're starting a request
+        sessionState.requestStartTime = Date.now()
+        sessionState.isProcessing = true
+        sessionState.lastStatus = "connecting"
+        
         // Return auth info with empty apiKey and custom fetch
         // The custom fetch handles authentication via the token
         return {
@@ -236,5 +283,93 @@ export default async function plugin({ client, project, directory }: any) {
         }
       },
     },
+    
+    // ========================================================================
+    // Event Handlers
+    // ========================================================================
+    
+    /**
+     * Handle OpenCode events for session status feedback
+     * 
+     * This is preparation for when GhostLLM emits reasoning events.
+     * Currently tracks session lifecycle for debugging/logging.
+     * 
+     * Available events:
+     * - session.status: Status updates during processing
+     * - session.idle: Session completed
+     * - session.error: An error occurred
+     * - message.part.updated: Message content updated (including reasoning)
+     */
+    event: async ({ event }: { event: { type: string; properties?: Record<string, any> } }) => {
+      const eventType = event.type
+      const props = event.properties || {}
+      
+      switch (eventType) {
+        case "session.status":
+          // Track status changes from GhostLLM
+          // When server-side reasoning events are implemented,
+          // this will receive updates like:
+          // - "securing" (PII detection starting)
+          // - "protected" (PII found and obfuscated)
+          // - "processing" (LLM call in progress)
+          // - "restoring" (de-obfuscation happening)
+          sessionState.lastStatus = props.status || "unknown"
+          log(`Session status: ${sessionState.lastStatus}`)
+          break
+          
+        case "session.idle":
+          // Session completed - calculate total time
+          if (sessionState.requestStartTime) {
+            const duration = Date.now() - sessionState.requestStartTime
+            log(`Session completed in ${formatDuration(duration)}`)
+            sessionState.requestStartTime = null
+          }
+          sessionState.isProcessing = false
+          sessionState.lastStatus = "idle"
+          break
+          
+        case "session.error":
+          // Error occurred
+          log(`Session error: ${JSON.stringify(props)}`)
+          sessionState.isProcessing = false
+          sessionState.lastStatus = "error"
+          if (sessionState.requestStartTime) {
+            const duration = Date.now() - sessionState.requestStartTime
+            log(`Session failed after ${formatDuration(duration)}`)
+            sessionState.requestStartTime = null
+          }
+          break
+          
+        case "message.part.updated":
+          // Message content updated - this includes reasoning_content
+          // when GhostLLM sends reasoning events
+          if (props.part?.type === "reasoning") {
+            log(`Reasoning update: ${props.part?.reasoning?.substring(0, 100)}...`)
+          }
+          break
+          
+        default:
+          // Log other events for debugging during development
+          if (eventType.startsWith("session.") || eventType.startsWith("message.")) {
+            log(`Event: ${eventType}`)
+          }
+      }
+    },
+    
+    // ========================================================================
+    // Toast Notifications (Future Enhancement)
+    // ========================================================================
+    
+    /**
+     * TUI toast hook - can be used to show notifications
+     * 
+     * Note: This hook allows us to REACT to toast events, not CREATE them.
+     * Creating toasts would require the `client.app.toast()` API if available.
+     * 
+     * For now, this logs toast events for debugging.
+     */
+    // "tui.toast.show": async (input: any, output: any) => {
+    //   log(`Toast shown: ${JSON.stringify(input)}`)
+    // },
   }
 }
