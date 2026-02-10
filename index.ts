@@ -56,10 +56,18 @@ function formatDuration(ms: number): string {
 }
 
 /**
- * Read the current Dymium token from auth.json
- * This is called on EVERY request to ensure we always have a fresh token
+ * Auth info returned from auth.json
  */
-function getDymiumToken(): string | null {
+interface DymiumAuth {
+  token: string
+  app?: string // GhostLLM app name/ID for X-GhostLLM-App header
+}
+
+/**
+ * Read the current Dymium token and app from auth.json
+ * This is called on EVERY request to ensure we always have fresh credentials
+ */
+function getDymiumAuth(): DymiumAuth | null {
   try {
     if (!fs.existsSync(AUTH_JSON_PATH)) {
       log(`auth.json not found at ${AUTH_JSON_PATH}`)
@@ -70,7 +78,14 @@ function getDymiumToken(): string | null {
     const auth = JSON.parse(content)
     
     if (auth.dymium?.key) {
-      return auth.dymium.key
+      const result: DymiumAuth = {
+        token: auth.dymium.key,
+        app: auth.dymium.app, // GhostLLM app name for X-GhostLLM-App header
+      }
+      if (result.app) {
+        log(`Using GhostLLM app: ${result.app}`)
+      }
+      return result
     }
     
     log("No dymium.key found in auth.json")
@@ -178,14 +193,16 @@ function http11Request(
 /**
  * Custom fetch function that injects the fresh Dymium token on every request
  * Uses HTTP/1.1 to avoid issues with kubectl port-forward
+ * 
+ * Also sets X-GhostLLM-App header for OIDC/JWT authentication
  */
 async function dymiumFetch(
   input: RequestInfo | URL,
   init?: RequestInit
 ): Promise<Response> {
-  const token = getDymiumToken()
+  const auth = getDymiumAuth()
   
-  if (!token) {
+  if (!auth) {
     throw new Error("[dymium-auth] No valid Dymium token available. Please ensure the Dymium Provider app is running.")
   }
   
@@ -207,7 +224,14 @@ async function dymiumFetch(
   }
   
   // Set authorization (overwrite any existing)
-  headers["Authorization"] = `Bearer ${token}`
+  headers["Authorization"] = `Bearer ${auth.token}`
+  
+  // Set X-GhostLLM-App header for OIDC authentication
+  // This identifies which GhostLLM application configuration to use
+  if (auth.app) {
+    headers["X-GhostLLM-App"] = auth.app
+    log(`Setting X-GhostLLM-App header: ${auth.app}`)
+  }
   
   // Get body as string if present
   let body: string | undefined

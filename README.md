@@ -7,8 +7,9 @@ OpenCode plugin for Dymium/GhostLLM authentication with automatic token refresh 
 This plugin intercepts API requests to the "dymium" provider in OpenCode and:
 
 1. **Reads fresh tokens** from `~/.local/share/opencode/auth.json` on every request
-2. **Uses HTTP/1.1** explicitly to avoid crashing kubectl port-forward tunnels
-3. **Sets proper Host headers** for Istio Gateway routing (hostname only, no port)
+2. **Sets X-GhostLLM-App header** for OIDC/JWT authentication with GhostLLM
+3. **Uses HTTP/1.1** explicitly to avoid crashing kubectl port-forward tunnels
+4. **Sets proper Host headers** for Istio Gateway routing (hostname only, no port)
 
 ## Problem Solved
 
@@ -56,10 +57,13 @@ The [DymiumProvider](https://github.com/dymium-io/dymium-provider) macOS app aut
    {
      "dymium": {
        "type": "api",
-       "key": "your-jwt-token"
+       "key": "your-jwt-token",
+       "app": "your-ghostllm-app-name"
      }
    }
    ```
+   
+   The `app` field is **required** for OIDC/JWT authentication. It identifies which GhostLLM application configuration to use and is sent as the `X-GhostLLM-App` header.
 
 ## How It Works
 
@@ -73,17 +77,18 @@ The [DymiumProvider](https://github.com/dymium-io/dymium-provider) macOS app aut
 ┌─────────────────────┐
 │  dymium-auth-plugin │
 ├─────────────────────┤
-│ 1. Read fresh token │◀── ~/.local/share/opencode/auth.json
+│ 1. Read token + app │◀── ~/.local/share/opencode/auth.json
 │ 2. Set Auth header  │
-│ 3. HTTP/1.1 request │
-│ 4. Host: hostname   │
+│ 3. Set X-GhostLLM-App│
+│ 4. HTTP/1.1 request │
+│ 5. Host: hostname   │
 └─────────┬───────────┘
           │
           ▼
 ┌─────────────────────┐
 │  kubectl port-fwd   │
 │  → Istio Gateway    │
-│  → LLM Backend      │
+│  → GhostLLM Backend │
 └─────────────────────┘
 ```
 
@@ -103,10 +108,20 @@ const reqOptions: http.RequestOptions = {
     "Host": url.hostname,  // No port!
     "Connection": "close", // No keep-alive
     "Content-Length": "...",
-    "Authorization": "Bearer ..."
+    "Authorization": "Bearer <jwt-token>",
+    "X-GhostLLM-App": "your-app-name"  // Required for OIDC auth
   }
 }
 ```
+
+### X-GhostLLM-App Header
+
+When using Keycloak JWT tokens (OIDC authentication), GhostLLM requires the `X-GhostLLM-App` header to identify which application configuration to use. This header value should be either:
+
+- The **application name** (e.g., `"opencode-dev"`)
+- The **application ID** (UUID)
+
+The plugin reads this from the `app` field in `auth.json` and includes it automatically in all requests.
 
 ### Istio Gateway Compatibility
 
