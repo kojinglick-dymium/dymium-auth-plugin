@@ -61,6 +61,7 @@ function formatDuration(ms: number): string {
 interface DymiumAuth {
   token: string
   app?: string // GhostLLM app name/ID for X-GhostLLM-App header
+  endpoint?: string // LLM endpoint URL (source of truth from provider app)
 }
 
 /**
@@ -81,6 +82,7 @@ function getDymiumAuth(): DymiumAuth | null {
       const result: DymiumAuth = {
         token: auth.dymium.key,
         app: auth.dymium.app, // GhostLLM app name for X-GhostLLM-App header
+        endpoint: auth.dymium.endpoint, // LLM endpoint URL
       }
       if (result.app) {
         log(`Using GhostLLM app: ${result.app}`)
@@ -208,6 +210,23 @@ async function dymiumFetch(
   
   // Parse the URL
   const url = typeof input === "string" ? new URL(input) : input instanceof URL ? input : new URL(input.url)
+  
+  // Rewrite URL origin to match the endpoint from auth.json (source of truth)
+  // This ensures the correct host/port is used even if opencode.json is stale
+  if (auth.endpoint) {
+    try {
+      const endpointUrl = new URL(auth.endpoint)
+      const oldOrigin = url.origin
+      url.protocol = endpointUrl.protocol
+      url.hostname = endpointUrl.hostname
+      url.port = endpointUrl.port
+      if (oldOrigin !== url.origin) {
+        log(`Rewrote URL origin: ${oldOrigin} -> ${url.origin}`)
+      }
+    } catch (e) {
+      log(`Failed to parse endpoint URL from auth.json: ${auth.endpoint}`)
+    }
+  }
   
   // Build headers object - start with defaults for OpenAI-compatible API
   const headers: Record<string, string> = {
