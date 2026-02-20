@@ -2,115 +2,117 @@ import fs from "fs"
 import path from "path"
 import os from "os"
 
-// Log file for debugging (no console.log to avoid polluting OpenCode UI)
+// ============================================================================
+// Logging
+// ============================================================================
+
 const LOG_DIR = path.join(os.homedir(), ".local/share/dymium-opencode-plugin")
 const LOG_FILE = path.join(LOG_DIR, "debug.log")
 
-// Ensure log directory exists
 try {
-  if (!fs.existsSync(LOG_DIR)) {
-    fs.mkdirSync(LOG_DIR, { recursive: true })
-  }
+  if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true })
 } catch {}
 
 function log(message: string) {
-  const timestamp = new Date().toISOString()
-  const line = `${timestamp} ${message}\n`
   try {
-    fs.appendFileSync(LOG_FILE, line)
+    fs.appendFileSync(LOG_FILE, `${new Date().toISOString()} ${message}\n`)
   } catch {}
 }
 
 // ============================================================================
-// Session State Tracking
+// Token Resolution
 // ============================================================================
 
-interface SessionState {
-  requestStartTime: number | null
-  lastStatus: string | null
-  isProcessing: boolean
+/** Read the current token from the dymium provider app's token file or auth.json */
+function resolveToken(): string | null {
+  // Primary: token file written by dymium-provider's token refresh loop
+  const tokenPath = path.join(os.homedir(), ".local/share/dymium-provider/token")
+  try {
+    const token = fs.readFileSync(tokenPath, "utf-8").trim()
+    if (token) return token
+  } catch {}
+
+  // Fallback: auth.json written by dymium-provider's OpenCodeService
+  const authPath = path.join(os.homedir(), ".local/share/opencode/auth.json")
+  try {
+    const auth = JSON.parse(fs.readFileSync(authPath, "utf-8"))
+    const key = auth?.dymium?.key
+    if (key && typeof key === "string" && key.trim()) return key.trim()
+  } catch {}
+
+  return null
 }
 
-const sessionState: SessionState = {
-  requestStartTime: null,
-  lastStatus: null,
-  isProcessing: false,
-}
+// ============================================================================
+// Plugin
+// ============================================================================
 
-function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`
-  const seconds = Math.floor(ms / 1000)
-  if (seconds < 60) return `${seconds}s`
-  const minutes = Math.floor(seconds / 60)
-  const remainingSeconds = seconds % 60
-  return `${minutes}m ${remainingSeconds}s`
-}
-
-/**
- * OpenCode Plugin for Dymium/GhostLLM
- *
- * Authentication is handled natively by OpenCode via options.apiKey
- * in opencode.json, written by the Dymium Provider app.
- *
- * This plugin provides:
- * - Event handlers for session lifecycle logging
- * - Debugging support for the GhostLLM integration
- */
 export default async function plugin({ client, project, directory }: any) {
   log(`Plugin initialized for project: ${project?.name || directory}`)
 
   return {
     // ========================================================================
-    // Event Handlers
+    // Auth Hook — wraps fetch to inject Bearer token on every request
     // ========================================================================
-    event: async ({ event }: { event: { type: string; properties?: Record<string, any> } }) => {
-      const eventType = event.type
-      const props = event.properties || {}
+    auth: {
+      provider: "dymium",
+      methods: [{ type: "api" as const, label: "Dymium API Key" }],
+      async loader(getAuth: () => Promise<any>, provider: any) {
+        log("Auth loader called — setting up fetch wrapper")
 
-      switch (eventType) {
-        case "session.status":
-          sessionState.lastStatus = props.status || "unknown"
-          log(`Session status: ${sessionState.lastStatus}`)
-          break
+        // Read initial token for apiKey (OpenCode needs a non-empty apiKey to
+        // activate the provider — the real token is injected per-request below)
+        const initialToken = resolveToken() || "dymium-pending"
 
-        case "session.idle":
-          if (sessionState.requestStartTime) {
-            const duration = Date.now() - sessionState.requestStartTime
-            log(`Session completed in ${formatDuration(duration)}`)
-            sessionState.requestStartTime = null
-          }
-          sessionState.isProcessing = false
-          sessionState.lastStatus = "idle"
-          break
+        return {
+          apiKey: initialToken,
+          async fetch(
+            input: RequestInfo | URL,
+            init?: RequestInit
+          ): Promise<Response> {
+            const token = resolveToken()
+            if (!token) {
+              log("WARN: No token available for request")
+            }
 
-        case "session.error":
-          log(`Session error: ${JSON.stringify(props)}`)
-          sessionState.isProcessing = false
-          sessionState.lastStatus = "error"
-          if (sessionState.requestStartTime) {
-            const duration = Date.now() - sessionState.requestStartTime
-            log(`Session failed after ${formatDuration(duration)}`)
-            sessionState.requestStartTime = null
-          }
-          break
+            const headers = new Headers(init?.headers)
+            if (token) {
+              headers.set("Authorization", `Bearer ${token}`)
+            }
 
+            const url =
+              typeof input === "string"
+                ? input
+                : input instanceof URL
+                  ? input.toString()
+                  : input.url
+            log(`Fetch: ${init?.method || "GET"} ${url} (token=${token ? "yes" : "NONE"})`)
+
+            return fetch(input, { ...init, headers })
+          },
+        }
+      },
+    },
+
+    // ========================================================================
+    // Event Handlers — session lifecycle logging
+    // ========================================================================
+    event: async ({
+      event,
+    }: {
+      event: { type: string; properties?: Record<string, any> }
+    }) => {
+      const { type, properties: props = {} } = event
+      switch (type) {
         case "session.created":
-          sessionState.requestStartTime = Date.now()
-          sessionState.isProcessing = true
-          sessionState.lastStatus = "started"
           log("Session created")
           break
-
-        case "message.part.updated":
-          if (props.part?.type === "reasoning") {
-            log(`Reasoning update: ${props.part?.reasoning?.substring(0, 100)}...`)
-          }
+        case "session.idle":
+          log("Session idle")
           break
-
-        default:
-          if (eventType.startsWith("session.") || eventType.startsWith("message.")) {
-            log(`Event: ${eventType}`)
-          }
+        case "session.error":
+          log(`Session error: ${JSON.stringify(props)}`)
+          break
       }
     },
   }

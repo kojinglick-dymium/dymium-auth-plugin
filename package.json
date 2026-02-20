@@ -1,7 +1,7 @@
 {
   "name": "dymium-auth-plugin",
-  "version": "1.2.0",
-  "description": "OpenCode plugin for Dymium/GhostLLM authentication with HTTP/1.1 port-forward compatibility and session event handling",
+  "version": "1.3.0",
+  "description": "OpenCode plugin for Dymium/GhostLLM — injects auth tokens via fetch wrapper and provides session event logging",
   "main": "index.ts",
   "type": "module",
   "keywords": [
