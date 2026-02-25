@@ -26,9 +26,16 @@ function log(message: string) {
 /** Read the current token from the dymium provider app's token file or auth.json */
 function resolveToken(): string | null {
   // Primary: token file written by dymium-provider's token refresh loop
-  const tokenPath = path.join(os.homedir(), ".local/share/dymium-provider/token")
+  const tokenPath = path.join(os.homedir(), ".dymium/token")
   try {
     const token = fs.readFileSync(tokenPath, "utf-8").trim()
+    if (token) return token
+  } catch {}
+
+  // Legacy path used by older local plugin builds
+  const legacyTokenPath = path.join(os.homedir(), ".local/share/dymium-provider/token")
+  try {
+    const token = fs.readFileSync(legacyTokenPath, "utf-8").trim()
     if (token) return token
   } catch {}
 
@@ -41,6 +48,70 @@ function resolveToken(): string | null {
   } catch {}
 
   return null
+}
+
+function shouldTapReasoning(init?: RequestInit): boolean {
+  if (!init?.body || typeof init.body !== "string") return false
+  try {
+    const body = JSON.parse(init.body)
+    return body?.stream === true
+  } catch {
+    return false
+  }
+}
+
+function sanitizeReasoning(text: string): string {
+  return text.replace(/\s+/g, " ").trim().slice(0, 280)
+}
+
+function tapReasoningStream(response: Response, url: string): void {
+  const contentType = response.headers.get("content-type") || ""
+  if (!contentType.includes("text/event-stream")) return
+
+  const clone = response.clone()
+  const stream = clone.body
+  if (!stream) return
+
+  void (async () => {
+    const reader = stream.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ""
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split("\n")
+        buffer = lines.pop() || ""
+
+        for (const line of lines) {
+          const trimmed = line.trim()
+          if (!trimmed.startsWith("data:")) continue
+
+          const payload = trimmed.slice(5).trim()
+          if (!payload || payload === "[DONE]") continue
+
+          try {
+            const parsed = JSON.parse(payload)
+            const reasoning = parsed?.choices?.[0]?.delta?.reasoning_content
+            if (typeof reasoning === "string" && reasoning.trim()) {
+              log(`Reasoning(${url}): ${sanitizeReasoning(reasoning)}`)
+            }
+          } catch {
+            // ignore non-JSON data lines
+          }
+        }
+      }
+    } catch (e: any) {
+      log(`WARN: Reasoning stream tap failed: ${e?.message || String(e)}`)
+    } finally {
+      try {
+        reader.releaseLock()
+      } catch {}
+    }
+  })()
 }
 
 // ============================================================================
@@ -88,7 +159,14 @@ export default async function plugin({ client, project, directory }: any) {
                   : input.url
             log(`Fetch: ${init?.method || "GET"} ${url} (token=${token ? "yes" : "NONE"})`)
 
-            return fetch(input, { ...init, headers })
+            const response = await fetch(input, { ...init, headers })
+
+            // Optional observability: tap GhostLLM reasoning_content SSE chunks.
+            if (shouldTapReasoning(init)) {
+              tapReasoningStream(response, url)
+            }
+
+            return response
           },
         }
       },
