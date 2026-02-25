@@ -10,6 +10,7 @@ This plugin intercepts API requests to the `dymium` provider in OpenCode and:
 2. **Injects Authorization header** (`Bearer <token>`) for each request
 3. **Logs reasoning transparency signals** from OpenCode message-part events for debug observability
 4. **Taps raw SSE streams** on chat/responses endpoints and logs GhostLLM reasoning/PII metadata directly
+5. **Emits canonical summary lines** for downstream UI/log consumers (stable `PII Protection: ...` format)
 
 ## Problem Solved
 
@@ -87,6 +88,7 @@ Additionally, for streaming chat/responses calls, the plugin now performs a non-
 - `SSE.Reasoning: ...` for raw `delta.reasoning_content` / `delta.reasoning_details`
 - `SSE.PII.Details: {...}` when a structured masked `Protected details:` line is present
 - `SSE.GhostLLMPII: {...}` when a `ghostllm_pii` object appears in stream payloads
+- `PII Protection: ...` canonical status/summary lines (for stable UI parsing)
 
 This is observability-only and does not alter content/tool-call semantics or OpenCode response handling.
 

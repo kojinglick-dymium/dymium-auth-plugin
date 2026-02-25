@@ -102,6 +102,78 @@ function parseProtectedDetailsLine(line: string): Record<string, string> {
   return out
 }
 
+function canonicalReasoningStatus(line: string): string | null {
+  const clean = sanitizeReasoning(line)
+  if (!clean) return null
+
+  if (/^Securing PII:/i.test(clean)) {
+    return "PII Protection: Securing request..."
+  }
+  if (/Request verified secure/i.test(clean)) {
+    return "PII Protection: No sensitive data detected"
+  }
+  if (/^Protected \d+ items:/i.test(clean)) {
+    return `PII Protection: ${clean}`
+  }
+  if (/^Protected details:/i.test(clean)) {
+    return `PII Protection: ${clean}`
+  }
+  if (/Restoring protected data/i.test(clean)) {
+    return "PII Protection: Restoring protected data..."
+  }
+  return null
+}
+
+function readNumber(value: any): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value
+  if (typeof value === "string") {
+    const parsed = Number(value)
+    if (Number.isFinite(parsed)) return parsed
+  }
+  return null
+}
+
+function compactTypeCounts(byType: any): string {
+  if (!byType || typeof byType !== "object") return ""
+  const pairs: string[] = []
+  for (const [k, v] of Object.entries(byType)) {
+    const n = readNumber(v)
+    if (n !== null) pairs.push(`${k}=${n}`)
+  }
+  pairs.sort()
+  return pairs.join(", ")
+}
+
+function formatGhostPIISummary(ghostPII: any): string {
+  const summary = ghostPII?.summary ?? {}
+  const totalDetected =
+    readNumber(summary?.total_detected) ??
+    readNumber(summary?.detected) ??
+    readNumber(ghostPII?.total_detected) ??
+    readNumber(ghostPII?.detected)
+
+  const totalTransformed =
+    readNumber(summary?.total_transformed) ??
+    readNumber(summary?.transformed) ??
+    readNumber(ghostPII?.total_transformed) ??
+    readNumber(ghostPII?.transformed)
+
+  const redactedMessages =
+    readNumber(summary?.redacted_messages) ?? readNumber(ghostPII?.redacted_messages)
+  const redactedToolResults =
+    readNumber(summary?.redacted_tool_results) ?? readNumber(ghostPII?.redacted_tool_results)
+  const byType = compactTypeCounts(summary?.by_type ?? ghostPII?.by_type)
+  const mode = ghostPII?.mode || summary?.mode || "unknown"
+
+  const parts: string[] = [`PII Protection: ON`, `mode=${mode}`]
+  if (redactedMessages !== null) parts.push(`redacted_messages=${redactedMessages}`)
+  if (redactedToolResults !== null) parts.push(`redacted_tool_results=${redactedToolResults}`)
+  if (totalDetected !== null) parts.push(`detected=${totalDetected}`)
+  if (totalTransformed !== null) parts.push(`transformed=${totalTransformed}`)
+  if (byType) parts.push(`types=${byType}`)
+  return parts.join(" | ")
+}
+
 function tapGhostLLMSSE(response: Response, url: string) {
   // Detached observer: never block or mutate the original stream OpenCode consumes.
   ;(async () => {
@@ -143,6 +215,8 @@ function tapGhostLLMSSE(response: Response, url: string) {
           if (reasoning && reasoning.trim()) {
             const clean = sanitizeReasoning(reasoning)
             log(`SSE.Reasoning: ${clean}`)
+            const status = canonicalReasoningStatus(reasoning)
+            if (status) log(status)
             const details = parseProtectedDetailsLine(reasoning)
             if (Object.keys(details).length > 0) {
               log(`SSE.PII.Details: ${JSON.stringify(details)}`)
@@ -152,6 +226,7 @@ function tapGhostLLMSSE(response: Response, url: string) {
           const ghostPII = parsed?.ghostllm_pii
           if (ghostPII) {
             log(`SSE.GhostLLMPII: ${JSON.stringify(ghostPII)}`)
+            log(formatGhostPIISummary(ghostPII))
           }
         }
       }
@@ -239,7 +314,10 @@ export default async function plugin({ client, project, directory }: any) {
             typeof delta === "string" &&
             delta.trim()
           ) {
-            log(`ReasoningDelta: ${sanitizeReasoning(delta)}`)
+            const clean = sanitizeReasoning(delta)
+            log(`ReasoningDelta: ${clean}`)
+            const status = canonicalReasoningStatus(delta)
+            if (status) log(status)
           }
           break
         }
@@ -247,7 +325,10 @@ export default async function plugin({ client, project, directory }: any) {
           const part = props?.part
           const text = part?.text
           if (part?.type === "reasoning" && typeof text === "string" && text.trim()) {
-            log(`ReasoningPart: ${sanitizeReasoning(text)}`)
+            const clean = sanitizeReasoning(text)
+            log(`ReasoningPart: ${clean}`)
+            const status = canonicalReasoningStatus(text)
+            if (status) log(status)
           }
           break
         }
