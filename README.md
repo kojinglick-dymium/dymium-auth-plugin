@@ -8,13 +8,13 @@ This plugin intercepts API requests to the `dymium` provider in OpenCode and:
 
 1. **Reads fresh tokens** from `~/.local/share/opencode/auth.json` on every request
 2. **Injects Authorization header** (`Bearer <token>`) for each request
-3. **Taps streaming reasoning signals** (`delta.reasoning_content`) for debug observability
+3. **Logs reasoning transparency signals** from OpenCode message-part events for debug observability
 
 ## Problem Solved
 
 When using OpenCode with Dymium/GhostLLM and short-lived credentials:
 - the plugin guarantees fresh token injection per request,
-- and can observe PII transparency reasoning lines in SSE streams without changing response semantics.
+- and can observe PII transparency reasoning lines without changing response semantics.
 
 ## Installation
 
@@ -65,7 +65,7 @@ The [DymiumProvider](https://github.com/dymium-io/dymium-provider) macOS app aut
 │ 1. Read token       │◀── ~/.dymium/token or auth.json
 │ 2. Set Auth header  │
 │ 3. Send request     │
-│ 4. Tap reasoning SSE│
+│ 4. Log reasoning evt│
 └─────────┬───────────┘
           │
           ▼
@@ -78,10 +78,12 @@ The [DymiumProvider](https://github.com/dymium-io/dymium-provider) macOS app aut
 
 ## GhostLLM Streaming Transparency
 
-When a request uses `"stream": true`, GhostLLM may emit optional:
-- `choices[0].delta.reasoning_content`
+When OpenCode emits reasoning part updates (for example from `delta.reasoning_content`),
+the plugin logs:
+- `ReasoningDelta: ...` for `message.part.delta` events
+- `ReasoningPart: ...` for `message.part.updated` reasoning parts
 
-The plugin does not alter protocol behavior. It only logs these lines for debugging.
+This is observability-only and does not alter content/tool-call semantics.
 
 ### Debug Logging
 
