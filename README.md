@@ -9,6 +9,7 @@ This plugin intercepts API requests to the `dymium` provider in OpenCode and:
 1. **Reads fresh tokens** from `~/.local/share/opencode/auth.json` on every request
 2. **Injects Authorization header** (`Bearer <token>`) for each request
 3. **Logs reasoning transparency signals** from OpenCode message-part events for debug observability
+4. **Taps raw SSE streams** on chat/responses endpoints and logs GhostLLM reasoning/PII metadata directly
 
 ## Problem Solved
 
@@ -78,12 +79,16 @@ The [DymiumProvider](https://github.com/dymium-io/dymium-provider) macOS app aut
 
 ## GhostLLM Streaming Transparency
 
-When OpenCode emits reasoning part updates (for example from `delta.reasoning_content`),
-the plugin logs:
+When OpenCode emits reasoning part updates (for example from `delta.reasoning_content`), the plugin logs:
 - `ReasoningDelta: ...` for `message.part.delta` events
 - `ReasoningPart: ...` for `message.part.updated` reasoning parts
 
-This is observability-only and does not alter content/tool-call semantics.
+Additionally, for streaming chat/responses calls, the plugin now performs a non-blocking SSE observer on a cloned response stream and logs:
+- `SSE.Reasoning: ...` for raw `delta.reasoning_content` / `delta.reasoning_details`
+- `SSE.PII.Details: {...}` when a structured masked `Protected details:` line is present
+- `SSE.GhostLLMPII: {...}` when a `ghostllm_pii` object appears in stream payloads
+
+This is observability-only and does not alter content/tool-call semantics or OpenCode response handling.
 
 ### Debug Logging
 

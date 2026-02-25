@@ -54,6 +54,114 @@ function sanitizeReasoning(text: string): string {
   return text.replace(/\s+/g, " ").trim().slice(0, 280)
 }
 
+function isJSONContentType(contentType: string | null): boolean {
+  if (!contentType) return false
+  return contentType.toLowerCase().includes("application/json")
+}
+
+function shouldTapStreamingResponse(
+  method: string,
+  url: string,
+  response: Response,
+  requestBody?: string
+): boolean {
+  if (method.toUpperCase() !== "POST") return false
+  if (!/\/v1\/(chat\/completions|responses)(\/|$)/.test(url)) return false
+
+  const contentType = response.headers.get("content-type")
+  if (contentType?.toLowerCase().includes("text/event-stream")) return true
+
+  // Fallback: inspect request for stream=true when response header is missing/misleading.
+  if (requestBody && isJSONContentType(response.headers.get("content-type"))) {
+    try {
+      const payload = JSON.parse(requestBody)
+      return payload?.stream === true
+    } catch {}
+  }
+  return false
+}
+
+function parseProtectedDetailsLine(line: string): Record<string, string> {
+  // Example:
+  // "Protected details: EMAIL_ADDRESS(jo***@ex***.com), PHONE_NUMBER(+1***), US_SSN(***-**-6789)"
+  const out: Record<string, string> = {}
+  const marker = "Protected details:"
+  const idx = line.indexOf(marker)
+  if (idx < 0) return out
+  const rest = line.slice(idx + marker.length).trim()
+  if (!rest) return out
+  for (const item of rest.split(",")) {
+    const part = item.trim()
+    const open = part.indexOf("(")
+    const close = part.lastIndexOf(")")
+    if (open <= 0 || close <= open) continue
+    const key = part.slice(0, open).trim()
+    const val = part.slice(open + 1, close).trim()
+    if (key) out[key] = val
+  }
+  return out
+}
+
+function tapGhostLLMSSE(response: Response, url: string) {
+  // Detached observer: never block or mutate the original stream OpenCode consumes.
+  ;(async () => {
+    try {
+      const clone = response.clone()
+      if (!clone.body) return
+      const reader = clone.body.getReader()
+      const decoder = new TextDecoder()
+      let buf = ""
+
+      for (;;) {
+        const { value, done } = await reader.read()
+        if (done) break
+        buf += decoder.decode(value, { stream: true })
+        let split = buf.indexOf("\n")
+        while (split >= 0) {
+          const line = buf.slice(0, split).trim()
+          buf = buf.slice(split + 1)
+          split = buf.indexOf("\n")
+
+          if (!line.startsWith("data:")) continue
+          const payload = line.slice(5).trim()
+          if (!payload || payload === "[DONE]") continue
+
+          let parsed: any
+          try {
+            parsed = JSON.parse(payload)
+          } catch {
+            continue
+          }
+
+          const delta = parsed?.choices?.[0]?.delta
+          const reasoning =
+            typeof delta?.reasoning_content === "string"
+              ? delta.reasoning_content
+              : typeof delta?.reasoning_details === "string"
+                ? delta.reasoning_details
+                : null
+          if (reasoning && reasoning.trim()) {
+            const clean = sanitizeReasoning(reasoning)
+            log(`SSE.Reasoning: ${clean}`)
+            const details = parseProtectedDetailsLine(reasoning)
+            if (Object.keys(details).length > 0) {
+              log(`SSE.PII.Details: ${JSON.stringify(details)}`)
+            }
+          }
+
+          const ghostPII = parsed?.ghostllm_pii
+          if (ghostPII) {
+            log(`SSE.GhostLLMPII: ${JSON.stringify(ghostPII)}`)
+          }
+        }
+      }
+      log(`SSE observer completed for ${url}`)
+    } catch (err) {
+      log(`SSE observer error: ${String(err)}`)
+    }
+  })()
+}
+
 // ============================================================================
 // Plugin
 // ============================================================================
@@ -98,8 +206,16 @@ export default async function plugin({ client, project, directory }: any) {
                   ? input.toString()
                   : input.url
             log(`Fetch: ${init?.method || "GET"} ${url} (token=${token ? "yes" : "NONE"})`)
+            let requestBody: string | undefined
+            if (typeof init?.body === "string") {
+              requestBody = init.body
+            }
 
-            return fetch(input, { ...init, headers })
+            const response = await fetch(input, { ...init, headers })
+            if (shouldTapStreamingResponse(init?.method || "GET", url, response, requestBody)) {
+              tapGhostLLMSSE(response, url)
+            }
+            return response
           },
         }
       },
